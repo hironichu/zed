@@ -11,7 +11,8 @@ pub struct CellId(pub Uuid);
 
 impl CellId {
     fn parse_id_or_default(id: Option<String>) -> Self {
-        id.map(|id| CellId(Uuid::parse_str(&id).unwrap_or_default()))
+        id.and_then(|id_str| Uuid::parse_str(&id_str).ok())
+            .map(CellId)
             .unwrap_or_default()
     }
 }

@@ -1,4 +1,4 @@
-use std::{env, ffi::OsString, fs};
+use std::{env, fs};
 use zed::settings::LspSettings;
 use zed_extension_api::{self as zed, LanguageServerId, Result};
 
@@ -52,7 +52,6 @@ impl HtmlExtension {
         }
 
         self.did_find_server = true;
-
         Ok(SERVER_PATH.to_string())
     }
 }

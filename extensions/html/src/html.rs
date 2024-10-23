@@ -1,4 +1,4 @@
-use std::{env, fs};
+use std::{env, ffi::OsString, fs};
 use zed::settings::LspSettings;
 use zed_extension_api::{self as zed, LanguageServerId, Result};
 
@@ -52,6 +52,7 @@ impl HtmlExtension {
         }
 
         self.did_find_server = true;
+
         Ok(SERVER_PATH.to_string())
     }
 }
@@ -69,14 +70,20 @@ impl zed::Extension for HtmlExtension {
         _worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
         let server_path = self.server_script_path(language_server_id)?;
+		let current_dir = env::current_dir().unwrap();
+
+		let full_path  = current_dir.join(&server_path).to_string_lossy().to_string();
+
+		#[cfg(not(target_os = "windows"))]
+		let path: String = full_path.split_off(3);
+
+		#[cfg(target_os = "windows")]
+		let path: String = full_path;
+
         Ok(zed::Command {
             command: zed::node_binary_path()?,
             args: vec![
-                env::current_dir()
-                    .unwrap()
-                    .join(&server_path)
-                    .to_string_lossy()
-                    .to_string(),
+                path,
                 "--stdio".to_string(),
             ],
             env: Default::default(),

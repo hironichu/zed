@@ -1494,6 +1494,7 @@ impl SshRemoteConnection {
                 if installed_version.trim() == version.to_string() {
                     server_binary_exists = true;
                 }
+                log::info!("checked remote server binary for version. latest version: {}. remote server version: {}", version.to_string(), installed_version.trim());
             }
         }
 
@@ -1529,7 +1530,7 @@ impl SshRemoteConnection {
             run_cmd(self.socket.ssh_command("mkdir").arg("-p").arg(parent)).await?;
         }
 
-        delegate.set_status(Some("Downloading remote development server on host..."), cx);
+        delegate.set_status(Some("Downloading remote development server on host"), cx);
 
         let script = format!(
             r#"

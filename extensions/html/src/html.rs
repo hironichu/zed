@@ -71,13 +71,14 @@ impl zed::Extension for HtmlExtension {
         let server_path = self.server_script_path(language_server_id)?;
 		let current_dir = env::current_dir().unwrap();
 
-		let full_path  = current_dir.join(&server_path).to_string_lossy().to_string();
+		let mut full_path  = current_dir.join(&server_path).to_string_lossy().to_string();
 
-		#[cfg(not(target_os = "windows"))]
+		// #[cfg(target_os = "windows")]
 		let path: String = full_path.split_off(3);
 
-		#[cfg(target_os = "windows")]
-		let path: String = full_path;
+		// #[cfg(not(target_os = "windows"))]
+		// let path: String = full_path;
+
 
         Ok(zed::Command {
             command: zed::node_binary_path()?,

@@ -228,7 +228,6 @@ messages!(
     (JoinChannelChat, Foreground),
     (JoinChannelChatResponse, Foreground),
     (JoinProject, Foreground),
-    (JoinHostedProject, Foreground),
     (JoinProjectResponse, Foreground),
     (JoinRoom, Foreground),
     (JoinRoomResponse, Foreground),
@@ -344,8 +343,6 @@ messages!(
     (FindSearchCandidatesResponse, Background),
     (CloseBuffer, Foreground),
     (UpdateUserSettings, Foreground),
-    (CheckFileExists, Background),
-    (CheckFileExistsResponse, Background),
     (ShutdownRemoteServer, Foreground),
     (RemoveWorktree, Foreground),
     (LanguageServerLog, Foreground),
@@ -357,6 +354,18 @@ messages!(
     (FlushBufferedMessages, Foreground),
     (LanguageServerPromptRequest, Foreground),
     (LanguageServerPromptResponse, Foreground),
+    (GitBranches, Background),
+    (GitBranchesResponse, Background),
+    (UpdateGitBranch, Background),
+    (ListToolchains, Foreground),
+    (ListToolchainsResponse, Foreground),
+    (ActivateToolchain, Foreground),
+    (ActiveToolchain, Foreground),
+    (ActiveToolchainResponse, Foreground),
+    (GetPathMetadata, Background),
+    (GetPathMetadataResponse, Background),
+    (GetPanicFiles, Background),
+    (GetPanicFilesResponse, Background),
 );
 
 request_messages!(
@@ -408,7 +417,6 @@ request_messages!(
     (JoinChannel, JoinRoomResponse),
     (JoinChannelBuffer, JoinChannelBufferResponse),
     (JoinChannelChat, JoinChannelChatResponse),
-    (JoinHostedProject, JoinProjectResponse),
     (JoinProject, JoinProjectResponse),
     (JoinRoom, JoinRoomResponse),
     (LeaveChannelBuffer, Ack),
@@ -466,13 +474,19 @@ request_messages!(
     (SynchronizeContexts, SynchronizeContextsResponse),
     (LspExtSwitchSourceHeader, LspExtSwitchSourceHeaderResponse),
     (AddWorktree, AddWorktreeResponse),
-    (CheckFileExists, CheckFileExistsResponse),
     (ShutdownRemoteServer, Ack),
     (RemoveWorktree, Ack),
     (OpenServerSettings, OpenBufferResponse),
     (GetPermalinkToLine, GetPermalinkToLineResponse),
     (FlushBufferedMessages, Ack),
     (LanguageServerPromptRequest, LanguageServerPromptResponse),
+    (GitBranches, GitBranchesResponse),
+    (UpdateGitBranch, Ack),
+    (ListToolchains, ListToolchainsResponse),
+    (ActivateToolchain, Ack),
+    (ActiveToolchain, ActiveToolchainResponse),
+    (GetPathMetadata, GetPathMetadataResponse),
+    (GetPanicFiles, GetPanicFilesResponse)
 );
 
 entity_messages!(
@@ -544,13 +558,18 @@ entity_messages!(
     SynchronizeContexts,
     LspExtSwitchSourceHeader,
     UpdateUserSettings,
-    CheckFileExists,
     LanguageServerLog,
     Toast,
     HideToast,
     OpenServerSettings,
     GetPermalinkToLine,
-    LanguageServerPromptRequest
+    LanguageServerPromptRequest,
+    GitBranches,
+    UpdateGitBranch,
+    ListToolchains,
+    ActivateToolchain,
+    ActiveToolchain,
+    GetPathMetadata,
 );
 
 entity_messages!(

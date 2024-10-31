@@ -8664,14 +8664,22 @@ impl Editor {
             let snapshot = this.buffer.read(cx).read(cx);
             let empty_str: Arc<str> = Arc::default();
             let mut suffixes_inserted = Vec::new();
+            let ignore_indent = action.ignore_indent;
 
             fn comment_prefix_range(
                 snapshot: &MultiBufferSnapshot,
                 row: MultiBufferRow,
                 comment_prefix: &str,
                 comment_prefix_whitespace: &str,
+                ignore_indent: bool,
             ) -> Range<Point> {
-                let start = Point::new(row.0, snapshot.indent_size_for_line(row).len);
+                let indent_size = if ignore_indent {
+                    0
+                } else {
+                    snapshot.indent_size_for_line(row).len
+                };
+
+                let start = Point::new(row.0, indent_size);
 
                 let mut line_bytes = snapshot
                     .bytes_in_range(start..snapshot.max_point())
@@ -8767,7 +8775,16 @@ impl Editor {
                 }
 
                 // If the language has line comments, toggle those.
-                let full_comment_prefixes = language.line_comment_prefixes();
+                let mut full_comment_prefixes = language.line_comment_prefixes().to_vec();
+
+                // If ignore_indent is set, trim spaces from the right side of all full_comment_prefixes
+                if ignore_indent {
+                    full_comment_prefixes = full_comment_prefixes
+                        .into_iter()
+                        .map(|s| Arc::from(s.trim_end()))
+                        .collect();
+                }
+
                 if !full_comment_prefixes.is_empty() {
                     let first_prefix = full_comment_prefixes
                         .first()
@@ -8794,6 +8811,7 @@ impl Editor {
                                     row,
                                     &prefix[..trimmed_prefix_len],
                                     &prefix[trimmed_prefix_len..],
+                                    ignore_indent,
                                 )
                             })
                             .max_by_key(|range| range.end.column - range.start.column)
@@ -8834,6 +8852,7 @@ impl Editor {
                         start_row,
                         comment_prefix,
                         comment_prefix_whitespace,
+                        ignore_indent,
                     );
                     let suffix_range = comment_suffix_range(
                         snapshot.deref(),
@@ -9629,8 +9648,8 @@ impl Editor {
         let Some(provider) = self.semantics_provider.clone() else {
             return Task::ready(Ok(Navigated::No));
         };
-        let buffer = self.buffer.read(cx);
         let head = self.selections.newest::<usize>(cx).head();
+        let buffer = self.buffer.read(cx);
         let (buffer, head) = if let Some(text_anchor) = buffer.text_anchor_for_position(head, cx) {
             text_anchor
         } else {
@@ -9937,8 +9956,8 @@ impl Editor {
         _: &FindAllReferences,
         cx: &mut ViewContext<Self>,
     ) -> Option<Task<Result<Navigated>>> {
-        let multi_buffer = self.buffer.read(cx);
         let selection = self.selections.newest::<usize>(cx);
+        let multi_buffer = self.buffer.read(cx);
         let head = selection.head();
 
         let multi_buffer_snapshot = multi_buffer.snapshot(cx);
@@ -10345,8 +10364,9 @@ impl Editor {
         self.show_local_selections = true;
 
         if moving_cursor {
-            let rename_editor = rename.editor.read(cx);
-            let cursor_in_rename_editor = rename_editor.selections.newest::<usize>(cx).head();
+            let cursor_in_rename_editor = rename.editor.update(cx, |editor, cx| {
+                editor.selections.newest::<usize>(cx).head()
+            });
 
             // Update the selection to match the position of the selection inside
             // the rename editor.
@@ -10460,7 +10480,7 @@ impl Editor {
 
     fn cancel_language_server_work(
         &mut self,
-        _: &CancelLanguageServerWork,
+        _: &actions::CancelLanguageServerWork,
         cx: &mut ViewContext<Self>,
     ) {
         if let Some(project) = self.project.clone() {
@@ -11592,9 +11612,9 @@ impl Editor {
     }
 
     pub fn copy_file_location(&mut self, _: &CopyFileLocation, cx: &mut ViewContext<Self>) {
+        let selection = self.selections.newest::<Point>(cx).start.row + 1;
         if let Some(file) = self.target_file(cx) {
             if let Some(path) = file.path().to_str() {
-                let selection = self.selections.newest::<Point>(cx).start.row + 1;
                 cx.write_to_clipboard(ClipboardItem::new_string(format!("{path}:{selection}")));
             }
         }
@@ -12370,9 +12390,10 @@ impl Editor {
             return;
         };
 
+        let selections = self.selections.all::<usize>(cx);
         let buffer = self.buffer.read(cx);
         let mut new_selections_by_buffer = HashMap::default();
-        for selection in self.selections.all::<usize>(cx) {
+        for selection in selections {
             for (buffer, range, _) in
                 buffer.range_to_buffer_ranges(selection.start..selection.end, cx)
             {
@@ -12417,6 +12438,7 @@ impl Editor {
     }
 
     fn open_excerpts_common(&mut self, split: bool, cx: &mut ViewContext<Self>) {
+        let selections = self.selections.all::<usize>(cx);
         let buffer = self.buffer.read(cx);
         if buffer.is_singleton() {
             cx.propagate();
@@ -12429,7 +12451,7 @@ impl Editor {
         };
 
         let mut new_selections_by_buffer = HashMap::default();
-        for selection in self.selections.all::<usize>(cx) {
+        for selection in selections {
             for (mut buffer_handle, mut range, _) in
                 buffer.range_to_buffer_ranges(selection.range(), cx)
             {
@@ -12545,7 +12567,7 @@ impl Editor {
     fn selection_replacement_ranges(
         &self,
         range: Range<OffsetUtf16>,
-        cx: &AppContext,
+        cx: &mut AppContext,
     ) -> Vec<Range<OffsetUtf16>> {
         let selections = self.selections.all::<OffsetUtf16>(cx);
         let newest_selection = selections

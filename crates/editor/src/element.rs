@@ -25,7 +25,7 @@ use crate::{
     MULTI_BUFFER_EXCERPT_HEADER_HEIGHT,
 };
 use client::ParticipantIndex;
-use collections::{BTreeMap, HashMap};
+use collections::{BTreeMap, HashMap, HashSet};
 use git::{blame::BlameEntry, diff::DiffHunkStatus, Oid};
 use gpui::Subscription;
 use gpui::{
@@ -809,10 +809,12 @@ impl EditorElement {
         cx.notify()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn layout_selections(
         &self,
         start_anchor: Anchor,
         end_anchor: Anchor,
+        local_selections: &[Selection<Point>],
         snapshot: &EditorSnapshot,
         start_row: DisplayRow,
         end_row: DisplayRow,
@@ -827,13 +829,9 @@ impl EditorElement {
         let mut newest_selection_head = None;
         self.editor.update(cx, |editor, cx| {
             if editor.show_local_selections {
-                let mut local_selections: Vec<Selection<Point>> = editor
-                    .selections
-                    .disjoint_in_range(start_anchor..end_anchor, cx);
-                local_selections.extend(editor.selections.pending(cx));
                 let mut layouts = Vec::new();
                 let newest = editor.selections.newest(cx);
-                for selection in local_selections.drain(..) {
+                for selection in local_selections.iter().cloned() {
                     let is_empty = selection.start == selection.end;
                     let is_newest = selection == newest;
 
@@ -996,6 +994,7 @@ impl EditorElement {
         &self,
         snapshot: &EditorSnapshot,
         selections: &[(PlayerColor, Vec<SelectionLayout>)],
+        block_start_rows: &HashSet<DisplayRow>,
         visible_display_row_range: Range<DisplayRow>,
         line_layouts: &[LineWithInvisibles],
         text_hitbox: &Hitbox,
@@ -1015,7 +1014,10 @@ impl EditorElement {
                     let cursor_position = selection.head;
 
                     let in_range = visible_display_row_range.contains(&cursor_position.row());
-                    if (selection.is_local && !editor.show_local_cursors(cx)) || !in_range {
+                    if (selection.is_local && !editor.show_local_cursors(cx))
+                        || !in_range
+                        || block_start_rows.contains(&cursor_position.row())
+                    {
                         continue;
                     }
 
@@ -1966,10 +1968,10 @@ impl EditorElement {
 
     fn layout_lines(
         rows: Range<DisplayRow>,
-        line_number_layouts: &[Option<ShapedLine>],
         snapshot: &EditorSnapshot,
         style: &EditorStyle,
         editor_width: Pixels,
+        is_row_soft_wrapped: impl Copy + Fn(usize) -> bool,
         cx: &mut WindowContext,
     ) -> Vec<LineWithInvisibles> {
         if rows.start >= rows.end {
@@ -2018,9 +2020,9 @@ impl EditorElement {
                 &style.text,
                 MAX_LINE_LEN,
                 rows.len(),
-                line_number_layouts,
                 snapshot.mode,
                 editor_width,
+                is_row_soft_wrapped,
                 cx,
             )
         }
@@ -2068,22 +2070,42 @@ impl EditorElement {
         editor_width: Pixels,
         scroll_width: &mut Pixels,
         resized_blocks: &mut HashMap<CustomBlockId, u32>,
+        selections: &[Selection<Point>],
+        is_row_soft_wrapped: impl Copy + Fn(usize) -> bool,
         cx: &mut WindowContext,
     ) -> (AnyElement, Size<Pixels>) {
         let mut element = match block {
             Block::Custom(block) => {
-                let align_to = block
-                    .start()
-                    .to_point(&snapshot.buffer_snapshot)
-                    .to_display_point(snapshot);
+                let block_start = block.start().to_point(&snapshot.buffer_snapshot);
+                let block_end = block.end().to_point(&snapshot.buffer_snapshot);
+                let align_to = block_start.to_display_point(snapshot);
                 let anchor_x = text_x
                     + if rows.contains(&align_to.row()) {
                         line_layouts[align_to.row().minus(rows.start) as usize]
                             .x_for_index(align_to.column() as usize)
                     } else {
-                        layout_line(align_to.row(), snapshot, &self.style, editor_width, cx)
-                            .x_for_index(align_to.column() as usize)
+                        layout_line(
+                            align_to.row(),
+                            snapshot,
+                            &self.style,
+                            editor_width,
+                            is_row_soft_wrapped,
+                            cx,
+                        )
+                        .x_for_index(align_to.column() as usize)
                     };
+
+                let selected = selections
+                    .binary_search_by(|selection| {
+                        if selection.end <= block_start {
+                            Ordering::Less
+                        } else if selection.start >= block_end {
+                            Ordering::Greater
+                        } else {
+                            Ordering::Equal
+                        }
+                    })
+                    .is_ok();
 
                 div()
                     .size_full()
@@ -2094,6 +2116,7 @@ impl EditorElement {
                         line_height,
                         em_width,
                         block_id,
+                        selected,
                         max_width: text_hitbox.size.width.max(*scroll_width),
                         editor_style: &self.style,
                     }))
@@ -2431,6 +2454,8 @@ impl EditorElement {
         text_x: Pixels,
         line_height: Pixels,
         line_layouts: &[LineWithInvisibles],
+        selections: &[Selection<Point>],
+        is_row_soft_wrapped: impl Copy + Fn(usize) -> bool,
         cx: &mut WindowContext,
     ) -> Result<Vec<BlockLayout>, HashMap<CustomBlockId, u32>> {
         let (fixed_blocks, non_fixed_blocks) = snapshot
@@ -2467,6 +2492,8 @@ impl EditorElement {
                 editor_width,
                 scroll_width,
                 &mut resized_blocks,
+                selections,
+                is_row_soft_wrapped,
                 cx,
             );
             fixed_block_max_width = fixed_block_max_width.max(element_size.width + em_width);
@@ -2511,6 +2538,8 @@ impl EditorElement {
                 editor_width,
                 scroll_width,
                 &mut resized_blocks,
+                selections,
+                is_row_soft_wrapped,
                 cx,
             );
 
@@ -2556,6 +2585,8 @@ impl EditorElement {
                             editor_width,
                             scroll_width,
                             &mut resized_blocks,
+                            selections,
+                            is_row_soft_wrapped,
                             cx,
                         );
 
@@ -2584,6 +2615,7 @@ impl EditorElement {
     fn layout_blocks(
         &self,
         blocks: &mut Vec<BlockLayout>,
+        block_starts: &mut HashSet<DisplayRow>,
         hitbox: &Hitbox,
         line_height: Pixels,
         scroll_pixel_position: gpui::Point<Pixels>,
@@ -2591,6 +2623,7 @@ impl EditorElement {
     ) {
         for block in blocks {
             let mut origin = if let Some(row) = block.row {
+                block_starts.insert(row);
                 hitbox.origin
                     + point(
                         Pixels::ZERO,
@@ -4338,9 +4371,9 @@ impl LineWithInvisibles {
         text_style: &TextStyle,
         max_line_len: usize,
         max_line_count: usize,
-        line_number_layouts: &[Option<ShapedLine>],
         editor_mode: EditorMode,
         text_width: Pixels,
+        is_row_soft_wrapped: impl Copy + Fn(usize) -> bool,
         cx: &mut WindowContext,
     ) -> Vec<Self> {
         let mut layouts = Vec::with_capacity(max_line_count);
@@ -4468,12 +4501,9 @@ impl LineWithInvisibles {
                         if editor_mode == EditorMode::Full {
                             // Line wrap pads its contents with fake whitespaces,
                             // avoid printing them
-                            let inside_wrapped_string = line_number_layouts
-                                .get(row)
-                                .and_then(|layout| layout.as_ref())
-                                .is_none();
+                            let is_soft_wrapped = is_row_soft_wrapped(row);
                             if highlighted_chunk.is_tab {
-                                if non_whitespace_added || !inside_wrapped_string {
+                                if non_whitespace_added || !is_soft_wrapped {
                                     invisibles.push(Invisible::Tab {
                                         line_start_offset: line.len(),
                                         line_end_offset: line.len() + line_chunk.len(),
@@ -4489,7 +4519,7 @@ impl LineWithInvisibles {
                                                 (*line_byte as char).is_whitespace();
                                             non_whitespace_added |= !is_whitespace;
                                             is_whitespace
-                                                && (non_whitespace_added || !inside_wrapped_string)
+                                                && (non_whitespace_added || !is_soft_wrapped)
                                         })
                                         .map(|(whitespace_index, _)| Invisible::Whitespace {
                                             line_offset: line.len() + whitespace_index,
@@ -4852,10 +4882,10 @@ impl Element for EditorElement {
                                     editor_handle.update(cx, |editor, cx| editor.snapshot(cx));
                                 let line = Self::layout_lines(
                                     DisplayRow(0)..DisplayRow(1),
-                                    &[],
                                     &editor_snapshot,
                                     &style,
                                     px(f32::MAX),
+                                    |_| false, // Single lines never soft wrap
                                     cx,
                                 )
                                 .pop()
@@ -5064,6 +5094,8 @@ impl Element for EditorElement {
                         .buffer_rows(start_row)
                         .take((start_row..end_row).len())
                         .collect::<Vec<_>>();
+                    let is_row_soft_wrapped =
+                        |row| buffer_rows.get(row).copied().flatten().is_none();
 
                     let start_anchor = if start_row == Default::default() {
                         Anchor::min()
@@ -5101,9 +5133,19 @@ impl Element for EditorElement {
                         cx,
                     );
 
+                    let local_selections: Vec<Selection<Point>> =
+                        self.editor.update(cx, |editor, cx| {
+                            let mut selections = editor
+                                .selections
+                                .disjoint_in_range(start_anchor..end_anchor, cx);
+                            selections.extend(editor.selections.pending(cx));
+                            selections
+                        });
+
                     let (selections, active_rows, newest_selection_head) = self.layout_selections(
                         start_anchor,
                         end_anchor,
+                        &local_selections,
                         &snapshot,
                         start_row,
                         end_row,
@@ -5145,10 +5187,10 @@ impl Element for EditorElement {
                     let mut max_visible_line_width = Pixels::ZERO;
                     let mut line_layouts = Self::layout_lines(
                         start_row..end_row,
-                        &line_numbers,
                         &snapshot,
                         &self.style,
                         editor_width,
+                        is_row_soft_wrapped,
                         cx,
                     );
                     for line_with_invisibles in &line_layouts {
@@ -5157,9 +5199,15 @@ impl Element for EditorElement {
                         }
                     }
 
-                    let longest_line_width =
-                        layout_line(snapshot.longest_row(), &snapshot, &style, editor_width, cx)
-                            .width;
+                    let longest_line_width = layout_line(
+                        snapshot.longest_row(),
+                        &snapshot,
+                        &style,
+                        editor_width,
+                        is_row_soft_wrapped,
+                        cx,
+                    )
+                    .width;
                     let mut scroll_width =
                         longest_line_width.max(max_visible_line_width) + overscroll.width;
 
@@ -5176,6 +5224,8 @@ impl Element for EditorElement {
                             gutter_dimensions.full_width(),
                             line_height,
                             &line_layouts,
+                            &local_selections,
+                            is_row_soft_wrapped,
                             cx,
                         )
                     });
@@ -5315,9 +5365,11 @@ impl Element for EditorElement {
                         cx,
                     );
 
+                    let mut block_start_rows = HashSet::default();
                     cx.with_element_namespace("blocks", |cx| {
                         self.layout_blocks(
                             &mut blocks,
+                            &mut block_start_rows,
                             &hitbox,
                             line_height,
                             scroll_pixel_position,
@@ -5334,6 +5386,7 @@ impl Element for EditorElement {
                     let visible_cursors = self.layout_visible_cursors(
                         &snapshot,
                         &selections,
+                        &block_start_rows,
                         start_row..end_row,
                         &line_layouts,
                         &text_hitbox,
@@ -5931,6 +5984,7 @@ fn layout_line(
     snapshot: &EditorSnapshot,
     style: &EditorStyle,
     text_width: Pixels,
+    is_row_soft_wrapped: impl Copy + Fn(usize) -> bool,
     cx: &mut WindowContext,
 ) -> LineWithInvisibles {
     let chunks = snapshot.highlighted_chunks(row..row + DisplayRow(1), true, style);
@@ -5939,9 +5993,9 @@ fn layout_line(
         &style.text,
         MAX_LINE_LEN,
         1,
-        &[],
         snapshot.mode,
         text_width,
+        is_row_soft_wrapped,
         cx,
     )
     .pop()
@@ -6626,15 +6680,22 @@ mod tests {
             "Hardcoded expected invisibles differ from the actual ones in '{input_text}'"
         );
 
-        init_test(cx, |s| {
-            s.defaults.show_whitespaces = Some(ShowWhitespaceSetting::All);
-            s.defaults.tab_size = NonZeroU32::new(TAB_SIZE);
-        });
+        for show_line_numbers in [true, false] {
+            init_test(cx, |s| {
+                s.defaults.show_whitespaces = Some(ShowWhitespaceSetting::All);
+                s.defaults.tab_size = NonZeroU32::new(TAB_SIZE);
+            });
 
-        let actual_invisibles =
-            collect_invisibles_from_new_editor(cx, EditorMode::Full, input_text, px(500.0));
+            let actual_invisibles = collect_invisibles_from_new_editor(
+                cx,
+                EditorMode::Full,
+                input_text,
+                px(500.0),
+                show_line_numbers,
+            );
 
-        assert_eq!(expected_invisibles, actual_invisibles);
+            assert_eq!(expected_invisibles, actual_invisibles);
+        }
     }
 
     #[gpui::test]
@@ -6648,14 +6709,17 @@ mod tests {
             EditorMode::SingleLine { auto_width: false },
             EditorMode::AutoHeight { max_lines: 100 },
         ] {
-            let invisibles = collect_invisibles_from_new_editor(
-                cx,
-                editor_mode_without_invisibles,
-                "\t\t\t| | a b",
-                px(500.0),
-            );
-            assert!(invisibles.is_empty(),
+            for show_line_numbers in [true, false] {
+                let invisibles = collect_invisibles_from_new_editor(
+                    cx,
+                    editor_mode_without_invisibles,
+                    "\t\t\t| | a b",
+                    px(500.0),
+                    show_line_numbers,
+                );
+                assert!(invisibles.is_empty(),
                     "For editor mode {editor_mode_without_invisibles:?} no invisibles was expected but got {invisibles:?}");
+            }
         }
     }
 
@@ -6706,43 +6770,48 @@ mod tests {
         let resize_step = 10.0;
         let mut editor_width = 200.0;
         while editor_width <= 1000.0 {
-            update_test_language_settings(cx, |s| {
-                s.defaults.tab_size = NonZeroU32::new(tab_size);
-                s.defaults.show_whitespaces = Some(ShowWhitespaceSetting::All);
-                s.defaults.preferred_line_length = Some(editor_width as u32);
-                s.defaults.soft_wrap = Some(language_settings::SoftWrap::PreferredLineLength);
-            });
+            for show_line_numbers in [true, false] {
+                update_test_language_settings(cx, |s| {
+                    s.defaults.tab_size = NonZeroU32::new(tab_size);
+                    s.defaults.show_whitespaces = Some(ShowWhitespaceSetting::All);
+                    s.defaults.preferred_line_length = Some(editor_width as u32);
+                    s.defaults.soft_wrap = Some(language_settings::SoftWrap::PreferredLineLength);
+                });
 
-            let actual_invisibles = collect_invisibles_from_new_editor(
-                cx,
-                EditorMode::Full,
-                &input_text,
-                px(editor_width),
-            );
+                let actual_invisibles = collect_invisibles_from_new_editor(
+                    cx,
+                    EditorMode::Full,
+                    &input_text,
+                    px(editor_width),
+                    show_line_numbers,
+                );
 
-            // Whatever the editor size is, ensure it has the same invisible kinds in the same order
-            // (no good guarantees about the offsets: wrapping could trigger padding and its tests should check the offsets).
-            let mut i = 0;
-            for (actual_index, actual_invisible) in actual_invisibles.iter().enumerate() {
-                i = actual_index;
-                match expected_invisibles.get(i) {
-                    Some(expected_invisible) => match (expected_invisible, actual_invisible) {
-                        (Invisible::Whitespace { .. }, Invisible::Whitespace { .. })
-                        | (Invisible::Tab { .. }, Invisible::Tab { .. }) => {}
-                        _ => {
-                            panic!("At index {i}, expected invisible {expected_invisible:?} does not match actual {actual_invisible:?} by kind. Actual invisibles: {actual_invisibles:?}")
+                // Whatever the editor size is, ensure it has the same invisible kinds in the same order
+                // (no good guarantees about the offsets: wrapping could trigger padding and its tests should check the offsets).
+                let mut i = 0;
+                for (actual_index, actual_invisible) in actual_invisibles.iter().enumerate() {
+                    i = actual_index;
+                    match expected_invisibles.get(i) {
+                        Some(expected_invisible) => match (expected_invisible, actual_invisible) {
+                            (Invisible::Whitespace { .. }, Invisible::Whitespace { .. })
+                            | (Invisible::Tab { .. }, Invisible::Tab { .. }) => {}
+                            _ => {
+                                panic!("At index {i}, expected invisible {expected_invisible:?} does not match actual {actual_invisible:?} by kind. Actual invisibles: {actual_invisibles:?}")
+                            }
+                        },
+                        None => {
+                            panic!("Unexpected extra invisible {actual_invisible:?} at index {i}")
                         }
-                    },
-                    None => panic!("Unexpected extra invisible {actual_invisible:?} at index {i}"),
+                    }
                 }
-            }
-            let missing_expected_invisibles = &expected_invisibles[i + 1..];
-            assert!(
-                missing_expected_invisibles.is_empty(),
-                "Missing expected invisibles after index {i}: {missing_expected_invisibles:?}"
-            );
+                let missing_expected_invisibles = &expected_invisibles[i + 1..];
+                assert!(
+                    missing_expected_invisibles.is_empty(),
+                    "Missing expected invisibles after index {i}: {missing_expected_invisibles:?}"
+                );
 
-            editor_width += resize_step;
+                editor_width += resize_step;
+            }
         }
     }
 
@@ -6751,6 +6820,7 @@ mod tests {
         editor_mode: EditorMode,
         input_text: &str,
         editor_width: Pixels,
+        show_line_numbers: bool,
     ) -> Vec<Invisible> {
         info!(
             "Creating editor with mode {editor_mode:?}, width {}px and text '{input_text}'",
@@ -6762,11 +6832,13 @@ mod tests {
         });
         let cx = &mut VisualTestContext::from_window(*window, cx);
         let editor = window.root(cx).unwrap();
+
         let style = cx.update(|cx| editor.read(cx).style().unwrap().clone());
         window
             .update(cx, |editor, cx| {
                 editor.set_soft_wrap_mode(language_settings::SoftWrap::EditorWidth, cx);
                 editor.set_wrap_width(Some(editor_width), cx);
+                editor.set_show_line_numbers(show_line_numbers, cx);
             })
             .unwrap();
         let (_, state) = cx.draw(point(px(500.), px(500.)), size(px(500.), px(500.)), |_| {

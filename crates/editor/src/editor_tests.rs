@@ -596,10 +596,10 @@ fn test_clone(cx: &mut TestAppContext) {
 
     _ = editor.update(cx, |editor, cx| {
         editor.change_selections(None, cx, |s| s.select_ranges(selection_ranges.clone()));
-        editor.fold_ranges(
-            [
-                (Point::new(1, 0)..Point::new(2, 0), FoldPlaceholder::test()),
-                (Point::new(3, 0)..Point::new(4, 0), FoldPlaceholder::test()),
+        editor.fold_creases(
+            vec![
+                Crease::simple(Point::new(1, 0)..Point::new(2, 0), FoldPlaceholder::test()),
+                Crease::simple(Point::new(3, 0)..Point::new(4, 0), FoldPlaceholder::test()),
             ],
             true,
             cx,
@@ -1283,11 +1283,11 @@ fn test_move_cursor_multibyte(cx: &mut TestAppContext) {
     assert_eq!('α'.len_utf8(), 2);
 
     _ = view.update(cx, |view, cx| {
-        view.fold_ranges(
+        view.fold_creases(
             vec![
-                (Point::new(0, 6)..Point::new(0, 12), FoldPlaceholder::test()),
-                (Point::new(1, 2)..Point::new(1, 4), FoldPlaceholder::test()),
-                (Point::new(2, 4)..Point::new(2, 8), FoldPlaceholder::test()),
+                Crease::simple(Point::new(0, 6)..Point::new(0, 12), FoldPlaceholder::test()),
+                Crease::simple(Point::new(1, 2)..Point::new(1, 4), FoldPlaceholder::test()),
+                Crease::simple(Point::new(2, 4)..Point::new(2, 8), FoldPlaceholder::test()),
             ],
             true,
             cx,
@@ -1398,6 +1398,15 @@ fn test_move_cursor_different_line_lengths(cx: &mut TestAppContext) {
         view.change_selections(None, cx, |s| {
             s.select_display_ranges([empty_range(0, "ⓐⓑⓒⓓⓔ".len())]);
         });
+
+        // moving above start of document should move selection to start of document,
+        // but the next move down should still be at the original goal_x
+        view.move_up(&MoveUp, cx);
+        assert_eq!(
+            view.selections.display_ranges(cx),
+            &[empty_range(0, "".len())]
+        );
+
         view.move_down(&MoveDown, cx);
         assert_eq!(
             view.selections.display_ranges(cx),
@@ -1417,6 +1426,25 @@ fn test_move_cursor_different_line_lengths(cx: &mut TestAppContext) {
         );
 
         view.move_down(&MoveDown, cx);
+        assert_eq!(
+            view.selections.display_ranges(cx),
+            &[empty_range(4, "ⓐⓑⓒⓓⓔ".len())]
+        );
+
+        // moving past end of document should not change goal_x
+        view.move_down(&MoveDown, cx);
+        assert_eq!(
+            view.selections.display_ranges(cx),
+            &[empty_range(5, "".len())]
+        );
+
+        view.move_down(&MoveDown, cx);
+        assert_eq!(
+            view.selections.display_ranges(cx),
+            &[empty_range(5, "".len())]
+        );
+
+        view.move_up(&MoveUp, cx);
         assert_eq!(
             view.selections.display_ranges(cx),
             &[empty_range(4, "ⓐⓑⓒⓓⓔ".len())]
@@ -3875,11 +3903,11 @@ fn test_move_line_up_down(cx: &mut TestAppContext) {
         build_editor(buffer, cx)
     });
     _ = view.update(cx, |view, cx| {
-        view.fold_ranges(
+        view.fold_creases(
             vec![
-                (Point::new(0, 2)..Point::new(1, 2), FoldPlaceholder::test()),
-                (Point::new(2, 3)..Point::new(4, 1), FoldPlaceholder::test()),
-                (Point::new(7, 0)..Point::new(8, 4), FoldPlaceholder::test()),
+                Crease::simple(Point::new(0, 2)..Point::new(1, 2), FoldPlaceholder::test()),
+                Crease::simple(Point::new(2, 3)..Point::new(4, 1), FoldPlaceholder::test()),
+                Crease::simple(Point::new(7, 0)..Point::new(8, 4), FoldPlaceholder::test()),
             ],
             true,
             cx,
@@ -3980,7 +4008,7 @@ fn test_move_line_up_down_with_blocks(cx: &mut TestAppContext) {
                 style: BlockStyle::Fixed,
                 placement: BlockPlacement::Below(snapshot.anchor_after(Point::new(2, 0))),
                 height: 1,
-                render: Box::new(|_| div().into_any()),
+                render: Arc::new(|_| div().into_any()),
                 priority: 0,
             }],
             Some(Autoscroll::fit()),
@@ -4022,7 +4050,7 @@ async fn test_selections_and_replace_blocks(cx: &mut TestAppContext) {
                 placement,
                 height: 4,
                 style: BlockStyle::Sticky,
-                render: Box::new(|_| gpui::div().into_any_element()),
+                render: Arc::new(|_| gpui::div().into_any_element()),
                 priority: 0,
             }],
             None,
@@ -4717,11 +4745,11 @@ fn test_split_selection_into_lines(cx: &mut TestAppContext) {
         build_editor(buffer, cx)
     });
     _ = view.update(cx, |view, cx| {
-        view.fold_ranges(
+        view.fold_creases(
             vec![
-                (Point::new(0, 2)..Point::new(1, 2), FoldPlaceholder::test()),
-                (Point::new(2, 3)..Point::new(4, 1), FoldPlaceholder::test()),
-                (Point::new(7, 0)..Point::new(8, 4), FoldPlaceholder::test()),
+                Crease::simple(Point::new(0, 2)..Point::new(1, 2), FoldPlaceholder::test()),
+                Crease::simple(Point::new(2, 3)..Point::new(4, 1), FoldPlaceholder::test()),
+                Crease::simple(Point::new(7, 0)..Point::new(8, 4), FoldPlaceholder::test()),
             ],
             true,
             cx,
@@ -5398,13 +5426,13 @@ async fn test_select_larger_smaller_syntax_node(cx: &mut gpui::TestAppContext) {
     // Ensure that we keep expanding the selection if the larger selection starts or ends within
     // a fold.
     editor.update(cx, |view, cx| {
-        view.fold_ranges(
+        view.fold_creases(
             vec![
-                (
+                Crease::simple(
                     Point::new(0, 21)..Point::new(0, 24),
                     FoldPlaceholder::test(),
                 ),
-                (
+                Crease::simple(
                     Point::new(3, 20)..Point::new(3, 22),
                     FoldPlaceholder::test(),
                 ),
@@ -6548,6 +6576,45 @@ async fn test_auto_replace_emoji_shortcode(cx: &mut gpui::TestAppContext) {
             editor.text(cx),
             "Hello 👋 😄👋:1: Test:wave: :wave:".unindent()
         );
+    });
+}
+
+#[gpui::test]
+async fn test_snippet_placeholder_choices(cx: &mut gpui::TestAppContext) {
+    init_test(cx, |_| {});
+
+    let (text, insertion_ranges) = marked_text_ranges(
+        indoc! {"
+            ˇ
+        "},
+        false,
+    );
+
+    let buffer = cx.update(|cx| MultiBuffer::build_simple(&text, cx));
+    let (editor, cx) = cx.add_window_view(|cx| build_editor(buffer, cx));
+
+    _ = editor.update(cx, |editor, cx| {
+        let snippet = Snippet::parse("type ${1|,i32,u32|} = $2").unwrap();
+
+        editor
+            .insert_snippet(&insertion_ranges, snippet, cx)
+            .unwrap();
+
+        fn assert(editor: &mut Editor, cx: &mut ViewContext<Editor>, marked_text: &str) {
+            let (expected_text, selection_ranges) = marked_text_ranges(marked_text, false);
+            assert_eq!(editor.text(cx), expected_text);
+            assert_eq!(editor.selections.ranges::<usize>(cx), selection_ranges);
+        }
+
+        assert(
+            editor,
+            cx,
+            indoc! {"
+            type «» =•
+            "},
+        );
+
+        assert!(editor.context_menu_visible(), "There should be a matches");
     });
 }
 
@@ -13139,7 +13206,7 @@ fn test_crease_insertion_and_rendering(cx: &mut TestAppContext) {
                 callback: Arc<dyn Fn(bool, &mut WindowContext) + Send + Sync>,
             }
 
-            let crease = Crease::new(
+            let crease = Crease::inline(
                 range,
                 FoldPlaceholder::test(),
                 {
@@ -13158,7 +13225,8 @@ fn test_crease_insertion_and_rendering(cx: &mut TestAppContext) {
 
             editor.insert_creases(Some(crease), cx);
             let snapshot = editor.snapshot(cx);
-            let _div = snapshot.render_fold_toggle(MultiBufferRow(1), false, cx.view().clone(), cx);
+            let _div =
+                snapshot.render_crease_toggle(MultiBufferRow(1), false, cx.view().clone(), cx);
             snapshot
         })
         .unwrap();

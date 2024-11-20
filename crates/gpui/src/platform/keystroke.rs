@@ -34,6 +34,7 @@ impl Keystroke {
         {
             let ime_modifiers = Modifiers {
                 control: self.modifiers.control,
+                platform: self.modifiers.platform,
                 ..Default::default()
             };
 
@@ -221,6 +222,8 @@ fn is_printable_key(key: &str) -> bool {
             | "insert"
             | "home"
             | "end"
+            | "back"
+            | "forward"
             | "escape"
     )
 }

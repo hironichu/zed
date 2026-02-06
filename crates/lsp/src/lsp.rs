@@ -205,6 +205,29 @@ fn is_unit<T: 'static>(_: &T) -> bool {
     TypeId::of::<T>() == TypeId::of::<()>()
 }
 
+/// Deserialize LSP request parameters with lenient handling for unit types.
+/// Some LSP servers (e.g., Copilot) send `{}` for requests that expect no parameters,
+/// which violates the LSP spec but we handle it gracefully.
+fn deserialize_request_params<T: DeserializeOwned + 'static>(
+    value: Value,
+) -> serde_json::Result<T> {
+    match serde_json::from_value(value.clone()) {
+        Ok(result) => Ok(result),
+        Err(err) => {
+            // If deserializing to unit type fails but value is an empty object, allow it
+            if TypeId::of::<T>() == TypeId::of::<()>() {
+                if let Value::Object(map) = &value {
+                    if map.is_empty() {
+                        // SAFETY: We've checked that T is (), so this is safe
+                        return Ok(unsafe { std::mem::transmute_copy(&()) });
+                    }
+                }
+            }
+            Err(err)
+        }
+    }
+}
+
 /// Language server protocol RPC request message.
 ///
 /// [LSP Specification](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage)
@@ -1176,7 +1199,7 @@ impl LanguageServer {
             method,
             Box::new(move |id, params, cx| {
                 if let Some(id) = id {
-                    match serde_json::from_value(params) {
+                    match deserialize_request_params(params) {
                         Ok(params) => {
                             let response = f(params, cx);
                             cx.foreground_executor()
@@ -2088,5 +2111,25 @@ mod tests {
             serde_json::to_string(&no_tag).unwrap(),
             "{\"jsonrpc\":\"\",\"id\":0,\"error\":null}"
         );
+    }
+
+    #[test]
+    fn test_deserialize_unit_params_with_empty_object() {
+        // Test that we can deserialize unit type params when LSP server sends {}
+        // This handles non-compliant servers like Copilot that send empty objects
+        // instead of null or omitting params for workspace/diagnostic/refresh
+        let empty_object = serde_json::json!({});
+        let result = deserialize_request_params::<()>(empty_object);
+        assert!(result.is_ok());
+
+        // Also test that normal deserialization still works
+        let null_value = serde_json::json!(null);
+        let result = deserialize_request_params::<()>(null_value);
+        assert!(result.is_ok());
+
+        // Test that non-empty objects still fail for unit type
+        let non_empty = serde_json::json!({"key": "value"});
+        let result = deserialize_request_params::<()>(non_empty);
+        assert!(result.is_err());
     }
 }

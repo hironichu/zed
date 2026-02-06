@@ -211,21 +211,21 @@ fn is_unit<T: 'static>(_: &T) -> bool {
 fn deserialize_request_params<T: DeserializeOwned + 'static>(
     value: Value,
 ) -> serde_json::Result<T> {
-    match serde_json::from_value(value.clone()) {
-        Ok(result) => Ok(result),
-        Err(err) => {
-            // If deserializing to unit type fails but value is an empty object, allow it
-            if TypeId::of::<T>() == TypeId::of::<()>() {
-                if let Value::Object(map) = &value {
-                    if map.is_empty() {
-                        // SAFETY: We've checked that T is (), so this is safe
-                        return Ok(unsafe { std::mem::transmute_copy(&()) });
-                    }
+    // Try standard deserialization first
+    serde_json::from_value(value.clone()).or_else(|err| {
+        // Special case: if deserializing to unit type () and value is empty object {},
+        // allow it to handle non-compliant LSP servers
+        if TypeId::of::<T>() == TypeId::of::<()>() {
+            if let Value::Object(map) = &value {
+                if map.is_empty() {
+                    // SAFETY: We verified T is () using TypeId. Since () is a zero-sized type,
+                    // creating it via mem::zeroed is safe and correct.
+                    return Ok(unsafe { std::mem::zeroed() });
                 }
             }
-            Err(err)
         }
-    }
+        Err(err)
+    })
 }
 
 /// Language server protocol RPC request message.
